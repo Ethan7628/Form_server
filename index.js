@@ -69,6 +69,14 @@ function createTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
+    // Add timeout settings
+    connectionTimeout: 30000, // 30 seconds
+    greetingTimeout: 30000,   // 30 seconds  
+    socketTimeout: 30000,     // 30 seconds
+    // For Gmail specifically
+    tls: {
+      rejectUnauthorized: false
+    }
   });
 }
 
