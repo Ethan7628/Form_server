@@ -3,13 +3,33 @@ const bodyParser = require('body-parser');
 const { query } = require('./db');
 require('dotenv').config();
 const nodemailer = require('nodemailer');
+const cors = require('cors'); // Add this line
 
 const app = express();
+
+// Add CORS middleware - THIS FIXES THE ISSUE
+app.use(cors({
+  origin: [
+    'http://localhost:8080', // Your local development
+    'https://ethank.vercel.app' // Your production frontend
+    
+  ],
+  credentials: true
+}));
+
+// Alternative: Allow all origins (for testing)
+// app.use(cors());
+
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 4000;
 
+// Your existing routes...
 app.post('/api/contact', async (req, res) => {
+  // Add CORS headers manually as backup
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  
   const { name, email, message, phone, company, purpose } = req.body || {};
 
   if (!name || !email || !message) {
