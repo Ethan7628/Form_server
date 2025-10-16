@@ -1,7 +1,7 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-const connectionString = process.env.DATABASE_URL;
+const connectionString = "postgresql://form_inputs_user:RG8kSXOIm6f4G0WdQrQzuvQJHAA6F7D9@dpg-d3oeen63jp1c73bu0ba0-a/form_inputs";
 
 if (!connectionString) {
   console.error('Missing DATABASE_URL in environment. Exiting.');
