@@ -13,6 +13,18 @@ app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 4000;
 
+// Initialize Resend safely
+let resend = null;
+try {
+  if (process.env.RESEND_API_KEY) {
+    const { Resend } = require('resend');
+    resend = new Resend(process.env.RESEND_API_KEY);
+    console.log('✅ Resend initialized successfully');
+  }
+} catch (error) {
+  console.error('❌ Failed to initialize Resend:', error.message);
+}
+
 // Initialize database table on startup
 async function initializeDatabase() {
   try {
@@ -43,20 +55,24 @@ initializeDatabase();
 
 // Email configuration check
 function isEmailConfigured() {
-  const configured = process.env.SMTP_HOST && 
-                    process.env.SMTP_USER && 
-                    process.env.SMTP_PASS && 
-                    process.env.SEND_TO;
+  const smtpConfigured = process.env.SMTP_HOST && 
+                        process.env.SMTP_USER && 
+                        process.env.SMTP_PASS && 
+                        process.env.SEND_TO;
+  
+  const resendConfigured = !!process.env.RESEND_API_KEY && !!process.env.SEND_TO;
   
   console.log('📧 Email configuration check:', {
+    RESEND_API_KEY: !!process.env.RESEND_API_KEY,
     SMTP_HOST: !!process.env.SMTP_HOST,
     SMTP_USER: !!process.env.SMTP_USER,
     SMTP_PASS: !!process.env.SMTP_PASS,
     SEND_TO: !!process.env.SEND_TO,
-    FullyConfigured: configured
+    Resend_Configured: resendConfigured,
+    SMTP_Configured: smtpConfigured
   });
   
-  return configured;
+  return resendConfigured || smtpConfigured;
 }
 
 // Create email transporter
@@ -69,15 +85,116 @@ function createTransporter() {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-    // Add timeout settings
-    connectionTimeout: 30000, // 30 seconds
-    greetingTimeout: 30000,   // 30 seconds  
-    socketTimeout: 30000,     // 30 seconds
-    // For Gmail specifically
+    connectionTimeout: 30000,
+    greetingTimeout: 30000,  
+    socketTimeout: 30000,
     tls: {
       rejectUnauthorized: false
     }
   });
+}
+
+// Send notification using Resend (preferred) or SMTP fallback
+async function sendFormNotification(formData, contactId) {
+  const { name, email, message, phone, company, purpose } = formData;
+
+  // Try Resend first if available
+  if (resend && process.env.RESEND_API_KEY && process.env.SEND_TO) {
+    try {
+      console.log('📧 Sending email via Resend API...');
+      const { data, error } = await resend.emails.send({
+        from: 'Form Server <onboarding@resend.dev>',
+        to: [process.env.SEND_TO],
+        subject: `📧 New Contact from ${name}`,
+        html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px;">
+          <h2 style="color: #2563eb;">New Contact Form Submission</h2>
+          <div style="background: #f8fafc; padding: 20px; border-radius: 8px;">
+            <h3>Contact Details:</h3>
+            <table style="width: 100%;">
+              <tr><td style="padding: 8px 0; font-weight: bold;">Name:</td><td>${name}</td></tr>
+              <tr><td style="padding: 8px 0; font-weight: bold;">Email:</td><td><a href="mailto:${email}">${email}</a></td></tr>
+              <tr><td style="padding: 8px 0; font-weight: bold;">Phone:</td><td>${phone || 'Not provided'}</td></tr>
+              <tr><td style="padding: 8px 0; font-weight: bold;">Company:</td><td>${company || 'Not provided'}</td></tr>
+              <tr><td style="padding: 8px 0; font-weight: bold;">Purpose:</td><td>${purpose || 'Not specified'}</td></tr>
+            </table>
+            
+            <h3 style="margin-top: 20px;">Message:</h3>
+            <div style="background: white; padding: 15px; border-radius: 5px;">
+              ${message.replace(/\n/g, '<br>')}
+            </div>
+          </div>
+          <div style="color: #64748b; font-size: 12px; margin-top: 20px;">
+            <strong>Submitted:</strong> ${new Date().toLocaleString()}<br>
+            <strong>Contact ID:</strong> ${contactId}
+          </div>
+        </div>
+        `
+      });
+
+      if (error) {
+        console.error('❌ Resend API error:', error);
+        // Fall through to SMTP
+      } else {
+        console.log('✅ Email sent via Resend:', data?.id || '(no id)');
+        return true;
+      }
+    } catch (error) {
+      console.error('❌ Resend failed:', error.message);
+      // Fall through to SMTP
+    }
+  }
+
+  // SMTP fallback
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && process.env.SEND_TO) {
+    try {
+      console.log('📧 Attempting SMTP fallback...');
+      const transporter = createTransporter();
+      
+      // Test connection first
+      await transporter.verify();
+      console.log('✅ SMTP connection verified');
+
+      const mailOptions = {
+        from: process.env.SMTP_FROM || process.env.SMTP_USER,
+        to: process.env.SEND_TO,
+        subject: `📧 New Contact from ${name}`,
+        text: `NEW CONTACT FORM SUBMISSION\n\nName: ${name}\nEmail: ${email}\nPhone: ${phone || 'Not provided'}\nCompany: ${company || 'Not provided'}\nPurpose: ${purpose || 'Not specified'}\n\nMessage:\n${message}\n\nSubmitted: ${new Date().toLocaleString()}\nContact ID: ${contactId}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px;">
+            <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">📧 New Contact Form Submission</h2>
+            <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 15px 0;">
+              <h3 style="color: #374151; margin-top: 0;">Contact Details:</h3>
+              <table style="width: 100%;">
+                <tr><td style="padding: 8px 0; font-weight: bold; width: 100px;">Name:</td><td>${name}</td></tr>
+                <tr><td style="padding: 8px 0; font-weight: bold;">Email:</td><td><a href="mailto:${email}">${email}</a></td></tr>
+                <tr><td style="padding: 8px 0; font-weight: bold;">Phone:</td><td>${phone || 'Not provided'}</td></tr>
+                <tr><td style="padding: 8px 0; font-weight: bold;">Company:</td><td>${company || 'Not provided'}</td></tr>
+                <tr><td style="padding: 8px 0; font-weight: bold;">Purpose:</td><td>${purpose || 'Not specified'}</td></tr>
+              </table>
+              <h3 style="color: #374151; margin-top: 20px;">Message:</h3>
+              <div style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid #2563eb;">${message.replace(/\n/g, '<br>')}</div>
+            </div>
+            <div style="color: #64748b; font-size: 12px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #e2e8f0;">
+              <strong>Submitted:</strong> ${new Date().toLocaleString()}<br>
+              <strong>Contact ID:</strong> ${contactId}<br>
+              <strong>Server:</strong> Form Server
+            </div>
+          </div>
+        `
+      };
+
+      const info = await transporter.sendMail(mailOptions);
+      console.log('✅ SMTP fallback email sent:', info?.messageId || '(no id)');
+      return true;
+    } catch (smtpErr) {
+      console.error('❌ SMTP fallback failed:', smtpErr.message);
+      return false;
+    }
+  }
+
+  console.log('⚠️ No email method configured');
+  return false;
 }
 
 // Health check endpoint
@@ -95,7 +212,11 @@ app.get('/health', async (req, res) => {
       status: 'OK', 
       database: 'Connected',
       table_exists: tableCheck.rows[0].exists,
-      email_configured: isEmailConfigured(),
+      email: {
+        resend_configured: !!process.env.RESEND_API_KEY,
+        smtp_configured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+        send_to: !!process.env.SEND_TO
+      },
       timestamp: new Date().toISOString()
     });
   } catch (err) {
@@ -107,53 +228,44 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Test email endpoint
+// Improved test email endpoint
 app.post('/test-email', async (req, res) => {
   try {
     console.log('📧 Testing email configuration...');
     
     if (!isEmailConfigured()) {
       return res.status(400).json({ 
-        error: 'SMTP configuration missing',
-        missing: {
-          SMTP_HOST: !!process.env.SMTP_HOST,
-          SMTP_USER: !!process.env.SMTP_USER,
-          SMTP_PASS: !!process.env.SMTP_PASS,
-          SEND_TO: !!process.env.SEND_TO
+        error: 'No email method configured',
+        config: {
+          resend: !!process.env.RESEND_API_KEY,
+          smtp: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+          send_to: !!process.env.SEND_TO
         }
       });
     }
 
-    const transporter = createTransporter();
-    await transporter.verify();
-    console.log('✅ SMTP connection verified');
-
-    const mailOptions = {
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
-      to: process.env.SEND_TO,
-      subject: '✅ Form Server - SMTP Test Successful',
-      text: `Congratulations! Your form server email configuration is working correctly.\n\nTimestamp: ${new Date().toISOString()}\nYou will receive emails when users submit your contact form.`,
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px;">
-          <h2 style="color: #22c55e;">✅ Form Server - SMTP Test Successful</h2>
-          <p>Congratulations! Your form server email configuration is working correctly.</p>
-          <div style="background: #f8fafc; padding: 15px; border-radius: 5px; margin: 10px 0;">
-            <strong>Timestamp:</strong> ${new Date().toISOString()}<br>
-            <strong>Server:</strong> Form Server
-          </div>
-          <p>You will receive emails when users submit your contact form.</p>
-        </div>
-      `
+    const testData = {
+      name: 'Test User',
+      email: 'test@example.com',
+      message: 'This is a test message to verify email functionality is working correctly.',
+      phone: '123-456-7890',
+      company: 'Test Company',
+      purpose: 'testing'
     };
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Test email sent successfully:', info.messageId);
+    const success = await sendFormNotification(testData, 999);
 
-    res.json({ 
-      success: true, 
-      message: 'Test email sent successfully',
-      messageId: info.messageId 
-    });
+    if (success) {
+      res.json({ 
+        success: true, 
+        message: 'Test email sent successfully! Check your inbox.',
+        method: process.env.RESEND_API_KEY ? 'Resend' : 'SMTP'
+      });
+    } else {
+      res.status(500).json({ 
+        error: 'Failed to send test email with all configured methods' 
+      });
+    }
 
   } catch (error) {
     console.error('❌ Email test failed:', error);
@@ -196,79 +308,18 @@ app.post('/api/contact', async (req, res) => {
     
     console.log('✅ Successfully saved contact with ID:', created.id);
 
-    // SEND EMAIL NOTIFICATION - THIS IS WHAT YOU NEED
-    if (isEmailConfigured()) {
-      try {
-        console.log('📧 Preparing to send email notification...');
-        
-        const transporter = createTransporter();
-        
-        const mailOptions = {
-          from: process.env.SMTP_FROM || process.env.SMTP_USER,
-          to: process.env.SEND_TO,
-          subject: `📧 New Contact Form Submission from ${name}`,
-          text: `
-NEW CONTACT FORM SUBMISSION
-
-Name: ${name}
-Email: ${email}
-Phone: ${phone || 'Not provided'}
-Company: ${company || 'Not provided'}
-Purpose: ${purpose || 'Not specified'}
-
-Message:
-${message}
-
-Submitted: ${new Date().toLocaleString()}
-Contact ID: ${created.id}
-          `,
-          html: `
-            <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px;">
-              <h2 style="color: #2563eb; border-bottom: 2px solid #2563eb; padding-bottom: 10px;">
-                📧 New Contact Form Submission
-              </h2>
-              
-              <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 15px 0;">
-                <h3 style="color: #374151; margin-top: 0;">Contact Details:</h3>
-                <table style="width: 100%;">
-                  <tr><td style="padding: 8px 0; font-weight: bold; width: 100px;">Name:</td><td>${name}</td></tr>
-                  <tr><td style="padding: 8px 0; font-weight: bold;">Email:</td><td><a href="mailto:${email}">${email}</a></td></tr>
-                  <tr><td style="padding: 8px 0; font-weight: bold;">Phone:</td><td>${phone || 'Not provided'}</td></tr>
-                  <tr><td style="padding: 8px 0; font-weight: bold;">Company:</td><td>${company || 'Not provided'}</td></tr>
-                  <tr><td style="padding: 8px 0; font-weight: bold;">Purpose:</td><td>${purpose || 'Not specified'}</td></tr>
-                </table>
-                
-                <h3 style="color: #374151; margin-top: 20px;">Message:</h3>
-                <div style="background: white; padding: 15px; border-radius: 5px; border-left: 4px solid #2563eb;">
-                  ${message.replace(/\n/g, '<br>')}
-                </div>
-              </div>
-              
-              <div style="color: #64748b; font-size: 12px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #e2e8f0;">
-                <strong>Submitted:</strong> ${new Date().toLocaleString()}<br>
-                <strong>Contact ID:</strong> ${created.id}<br>
-                <strong>Server:</strong> Form Server
-              </div>
-            </div>
-          `
-        };
-
-        const emailInfo = await transporter.sendMail(mailOptions);
-        console.log('✅ Contact form email sent successfully:', emailInfo.messageId);
-        
-      } catch (emailError) {
-        console.error('❌ Failed to send contact form email:', emailError);
-        // Don't fail the request if email fails
-      }
-    } else {
-      console.log('⚠️ SMTP not configured - skipping email notification');
-    }
+    // Send email notification
+    const emailSent = await sendFormNotification(
+      { name, email, message, phone, company, purpose }, 
+      created.id
+    );
 
     return res.status(200).json({ 
       ok: true, 
       id: created.id, 
       created_at: created.created_at,
-      message: 'Contact saved successfully' 
+      message: 'Contact saved successfully',
+      notification_sent: emailSent
     });
     
   } catch (err) {
@@ -289,12 +340,17 @@ app.get('/', (req, res) => {
       contact: '/api/contact',
       test_email: '/test-email'
     },
-    email_configured: isEmailConfigured(),
+    email: {
+      resend_configured: !!process.env.RESEND_API_KEY,
+      smtp_configured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+      fully_configured: isEmailConfigured()
+    },
     timestamp: new Date().toISOString()
   });
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 Contact server listening on port ${PORT}`);
-  console.log(`📧 Email configured: ${isEmailConfigured() ? 'YES' : 'NO'}`);
+  console.log(`📧 Resend configured: ${process.env.RESEND_API_KEY ? 'YES' : 'NO'}`);
+  console.log(`📧 SMTP configured: ${process.env.SMTP_HOST ? 'YES' : 'NO'}`);
 });
